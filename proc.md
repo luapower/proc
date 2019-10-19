@@ -16,8 +16,8 @@ Works on Windows, Linux and OSX.
 `p:exit_code() -> code | nil,'active'|'killed'`  get process status or exit code
 `p:forget()`                                     close process handles
 `proc.env(k) -> v`                               get env. var
-`proc.setenv(k, v) -> v`                         set env. var
-`proc.setenv(k) -> v`                            delete env. var
+`proc.setenv(k, v)`                              set env. var
+`proc.setenv(k) ->`                              delete env. var
 `proc.env() -> env`                              get all env. vars
 ------------------------------------------------ -----------------------------
 
