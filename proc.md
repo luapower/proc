@@ -17,7 +17,7 @@ Works on Windows, Linux and OSX.
 `p:forget()`                                     close process handles
 `proc.env(k) -> v`                               get env. var
 `proc.setenv(k, v)`                              set env. var
-`proc.setenv(k) ->`                              delete env. var
+`proc.setenv(k)`                                 delete env. var
 `proc.env() -> env`                              get all env. vars
 ------------------------------------------------ -----------------------------
 
