@@ -43,6 +43,10 @@ function M.setenv(k, v)
 	winapi.SetEnvironmentVariable(k, v)
 end
 
+--TODO: autokill with job objects:
+--https://stackoverflow.com/questions/2345034/terminate-all-grandchildren-when-terminating-a-child-process
+--NOTE: with this solution you can't run processes that use jobs themselves until Win8.
+
 function M.exec(cmd, args, env, dir, stdin, stdout, stderr, autokill)
 	if args then
 		local t = {'"'..cmd..'"'}
