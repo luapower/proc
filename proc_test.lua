@@ -109,8 +109,8 @@ function test_all()
 	end
 end
 
---test.pipe()
+test.pipe()
 
-test.autokill()
+--test.autokill()
 
 --test_all()
