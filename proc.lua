@@ -21,6 +21,7 @@ end
 
 if ffi.os == 'Windows' then --------------------------------------------------
 
+--TODO: move relevant ctypes here and get rid of the huge dependency.
 local winapi = require'winapi'
 require'winapi.process'
 
@@ -47,27 +48,37 @@ end
 --https://stackoverflow.com/questions/2345034/terminate-all-grandchildren-when-terminating-a-child-process
 --NOTE: with this solution you can't run processes that use jobs themselves until Win8.
 
-function M.exec(cmd, args, env, dir, stdin, stdout, stderr, autokill)
+--TODO: could probably spend some more time on this...
+local function esc(s)
+	s = s:gsub('(["&\\<>^|])', '^%1')
+	if s:find'%s' then
+		s = '"'..s..'"'
+	end
+	return s
+end
+
+local INVALID_HANDLE_VALUE = ffi.cast('HANDLE', -1)
+
+function M.exec(cmd, args, env, dir, stdin, stdout, stderr, autokill, inherit_all_handles)
 	if args then
-		local t = {'"'..cmd..'"'}
+		local t = {esc(cmd)}
 		for i,s in ipairs(args) do
-			t[i+1] = '"'..s..'"'
+			t[i+1] = esc(s)
 		end
 		cmd = table.concat(t, ' ')
 	end
-	local si, inherit_handles
+	local si
 	if stdin or stdout or stderr then
 		si = winapi.STARTUPINFO()
-		si.hStdInput  = stdin  and stdin.handle
-		si.hStdOutput = stdout and stdout.handle
-		si.hStdError  = stderr and stderr.handle
+		si.hStdInput  = stdin  and stdin .handle or INVALID_HANDLE_VALUE
+		si.hStdOutput = stdout and stdout.handle or INVALID_HANDLE_VALUE
+		si.hStdError  = stderr and stderr.handle or INVALID_HANDLE_VALUE
 		si.dwFlags = winapi.STARTF_USESTDHANDLES
-		inherit_handles = true
+		--NOTE: there's no way to inherit only these std handles: all handles
+		--declared inheritable in the parent process will be inherited!
+		inherit_all_handles = true
 	end
-	local proc_info, err, code = winapi.CreateProcess(
-		cmd, env, dir,
-		si, inherit_handles
-	)
+	local proc_info, err, code = winapi.CreateProcess(cmd, env, dir, si, inherit_all_handles)
 	if not proc_info then
 		return nil, err, code
 	end
@@ -120,6 +131,162 @@ function proc:exit_code()
 	end
 	self:forget()
 	return self:exit_code()
+end
+
+function M.popen_async(cmd, args, env, dir,
+	open_stdin, open_stdout, open_stderr, autokill, inherit_all_handles)
+
+	local fs = require'fs'
+
+	local in_rf, in_wf
+	local out_rf, out_wf
+	local err_rf, err_wf
+	local p, err, errno
+
+	local function close_all()
+		if in_rf  then in_rf :close() end
+		if in_wf  then in_wf :close() end
+		if out_rf then out_rf:close() end
+		if out_wf then out_wf:close() end
+		if err_rf then err_rf:close() end
+		if err_wf then err_wf:close() end
+	end
+
+	local function try(ret, ...)
+		if not ret then
+			close_all()
+		end
+		return ret, ...
+	end
+
+	if open_stdin then
+		in_rf, in_wf, errno = try(fs.pipe{
+			write_async = true,
+			read_inheritable = true,
+		})
+		if not in_rf then
+			return nil, in_wf, errno
+		end
+	end
+
+	if open_stdout then
+		out_rf, out_wf, errcode = try(fs.pipe{
+			read_async = true,
+			write_inheritable = true,
+		})
+		if not out_rf then
+			return nil, out_wf, errno
+		end
+	end
+
+	if open_stderr then
+		err_rf, err_wf, errno = try(fs.pipe{
+			read_async = true,
+			write_inheritable = true,
+		})
+		if not err_rf then
+			return nil, err_wf, errno
+		end
+	end
+
+	p, err, errno = try(M.exec(cmd, args, env, dir,
+		in_rf, out_wf, err_wf, autokill, inherit_all_handles))
+	if not p then
+		return nil, err, errno
+	end
+
+	local forget = p.forget
+	function p:forget()
+		close_all()
+		return forget(p)
+	end
+
+	local kill = p.kill
+	function p:kill()
+		close_all()
+		return kill(p)
+	end
+
+	--let the child process have the only handles to these pipe end points,
+	--otherwise when the child process exits, the pipes will stay open on
+	--account of us (the parent process) holding a handle to them.
+	if in_rf then in_rf:close() end
+	if out_wf then out_wf:close() end
+	if err_wf then err_wf:close() end
+
+	--allow a function's `buf, sz` args to be `s, [len]`.
+	local function stringdata(buf, sz)
+		if type(buf) == 'string' then
+			if sz then
+				assert(sz <= #buf, 'string too short')
+			else
+				sz = #buf
+			end
+			return ffi.cast('char*', buf), sz
+		else
+			assert(type(buf) == 'cdata', type(buf))
+			assert(type(sz) == 'number', type(sz))
+			return buf, sz
+		end
+	end
+
+	local function writeall(wf, s, len, expires)
+		local buf, sz = stringdata(s, len)
+		while sz > 0 do
+			local len, err, errno = wf:write_async(buf, sz, expires)
+			if not len then return nil, err, errno end
+			buf = buf + len
+			sz  = sz  - len
+		end
+		return true
+	end
+
+	local function write_func(wf)
+		return wf and function(self, s, len, expires)
+			if not s then
+				wf:close()
+				return true
+			end
+			local ok, err, errno = writeall(wf, s, len, expires)
+			if not ok then
+				wf:close()
+				return nil, err, errno
+			end
+			return ok
+		end
+	end
+
+	local function read_func(rf)
+		return rf and function(self, buf, sz, expires)
+			if buf == '*a' then --read all till the pipe breaks.
+				local t = {}
+				local sz = 4096
+				local buf = ffi.new('char[?]', sz)
+				while true do
+					local len, err, errno = rf:read_async(buf, sz, expires)
+					if not len then
+						if err == 'broken_pipe' then
+							break
+						else
+							rf:close()
+							return nil, err, errno
+						end
+					end
+					t[#t+1] = ffi.string(buf, len)
+				end
+				rf:close()
+				return table.concat(t)
+			else
+				return rf:read_async(buf, sz, expires)
+			end
+		end
+	end
+
+	p.read_stdout = read_func(out_rf)
+	p.read_stderr = read_func(err_rf)
+	p.write_stdin = write_func(in_wf)
+
+	return p
 end
 
 elseif ffi.os == 'Linux' or ffi.os == 'OSX' then -----------------------------
@@ -217,7 +384,7 @@ function getcwd()
 	end
 end
 
-function M.exec(cmd, args, env, dir, stdin, stdout, stderr, autokill)
+function M.exec(cmd, args, env, dir, stdin, stdout, stderr, autokill, inherit_all_handles)
 
 	if dir and cmd:sub(1, 1) ~= '/' then
 		cmd = getcwd() .. '/' .. cmd
@@ -387,8 +554,8 @@ else
 	error('unsupported OS '..ffi.os)
 end
 
-local function exec_args(cmd_field,
-	cmd, args, env, dir, stdin, stdout, stderr, autokill
+local function exec_args(std_prefix, cmd_field, cmd, args, env, dir,
+	stdin, stdout, stderr, autokill, inherit_all_handles
 )
 	if type(cmd) == 'table' then
 		local t = cmd
@@ -396,18 +563,24 @@ local function exec_args(cmd_field,
 		args     = t.args
 		env      = t.env
 		dir      = t.dir
-		stdin    = t.stdin
-		stdout   = t.stdout
-		stderr   = t.stderr
+		stdin    = t[std_prefix..'stdin']
+		stdout   = t[std_prefix..'stdout']
+		stderr   = t[std_prefix..'stderr']
 		autokill = t.autokill
+		inherit_all_handles = t.inherit_all_handles
 	end
 	assert(cmd)
-	return cmd, args, env, dir, stdin, stdout, stderr, autokill
+	return cmd, args, env, dir, stdin, stdout, stderr, autokill, inherit_all_handles
 end
 
 local exec = M.exec
 function M.exec(...)
-	return exec(exec_args('command', ...))
+	return exec(exec_args('', 'command', ...))
+end
+
+local popen_async = M.popen_async
+function M.popen_async(...)
+	return popen_async(exec_args('open_', 'command', ...))
 end
 
 function M.exec_luafile(...)
@@ -416,7 +589,11 @@ function M.exec_luafile(...)
 		local args = extend({script}, args)
 		return M.exec(exepath, args, ...)
 	end
-	return pass(exec_args('script', ...))
+	return pass(exec_args('', 'script', ...))
+end
+
+function M.popen_async_luafile(...)
+
 end
 
 return M

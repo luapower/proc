@@ -73,24 +73,29 @@ io.stdout:write(io.stdin:read('*n'))
 print'Hello'
 ]]))
 
-	assert(proc.exec_luafile({
+	local p = assert(proc.exec_luafile({
 		script = 'proc_test_pipe.lua',
 		stdin = in_rf,
 		stdout = out_wf,
 		stderr = err_wf
 	}))
 
+	--required in Windows to avoid hanging.
+	in_rf:close()
+	err_wf:close()
+	out_wf:close()
+
 	local s = '1234\n'
 	in_wf:write(s, #s)
 
-	local cb = ffi.new('char[1]')
-	while out_rf:read(cb, ffi.sizeof(cb)) > 0 do
-		local c = string.char(cb[0])
-		io.stdout:write(c, ' ')
-		if c == '\n' then
-			print()
+	local cb = ffi.new('uint8_t[1]')
+	while true do
+		local rlen, err = out_rf:read(cb, 1)
+		if not rlen or rlen == 0 then
 			break
 		end
+		local c = string.char(cb[0])
+		io.stdout:write(c)
 	end
 
 	assert(os.remove('proc_test_pipe.lua'))
