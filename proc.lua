@@ -48,9 +48,9 @@ end
 --https://stackoverflow.com/questions/2345034/terminate-all-grandchildren-when-terminating-a-child-process
 --NOTE: with this solution you can't run processes that use jobs themselves until Win8.
 
---TODO: could probably spend some more time on this...
+--TODO: could probably spend more time on this...
 local function esc(s)
-	s = s:gsub('(["&\\<>^|])', '^%1')
+	s = s:gsub('(["&<>^|])', '^%1')
 	if s:find'%s' then
 		s = '"'..s..'"'
 	end
@@ -59,45 +59,144 @@ end
 
 local INVALID_HANDLE_VALUE = ffi.cast('HANDLE', -1)
 
-function M.exec(cmd, args, env, dir, stdin, stdout, stderr, autokill, inherit_all_handles)
-	if args then
-		local t = {esc(cmd)}
-		for i,s in ipairs(args) do
-			t[i+1] = esc(s)
+function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_handles)
+
+	if type(cmd) == 'table' then
+		local t = {}
+		for i,s in ipairs(cmd) do
+			t[i] = esc(s)
 		end
 		cmd = table.concat(t, ' ')
 	end
+
+	local inp_rf, inp_wf
+	local out_rf, out_wf
+	local err_rf, err_wf
+
+	local function close_all()
+		if inp_rf then inp_rf:close() end
+		if inp_wf then inp_wf:close() end
+		if out_rf then out_rf:close() end
+		if out_wf then out_wf:close() end
+		if err_rf then err_rf:close() end
+		if err_wf then err_wf:close() end
+	end
+
+	local self = inherit({async = async}, proc)
+
+	if async and not M._async_wait then
+		local sock = require'sock'
+		self.sleep = sock.sleep
+	else
+		local time = require'time'
+		self.sleep = time.sleep
+	end
+
 	local si
+
 	if stdin or stdout or stderr then
+
+		local errno
+
+		if stdin == true then
+			local fs = require'fs'
+			inp_rf, inp_wf, errno = fs.pipe{
+				write_async = async,
+				read_inheritable = true,
+			}
+			if not inp_rf then
+				close_all()
+				return nil, inp_wf, errno
+			end
+			stdin = inp_wf
+			self.own_stdin = true
+		elseif stdin then
+			assert(stdin.is_pipe_end)
+			assert(not stdin.write_async == not async)
+		end
+
+		if stdout == true then
+			local fs = require'fs'
+			out_rf, out_wf, errcode = fs.pipe{
+				read_async = async,
+				write_inheritable = true,
+			}
+			if not out_rf then
+				close_all()
+				return nil, out_wf, errno
+			end
+			stdout = out_rf
+			self.own_stdout = true
+		elseif stdout then
+			assert(stdout.is_pipe_end)
+			assert(not stdout.read_async == not async)
+		end
+
+		if stderr == true then
+			local fs = require'fs'
+			err_rf, err_wf, errno = fs.pipe{
+				read_async = async,
+				write_inheritable = true,
+			}
+			if not err_rf then
+				close_all()
+				return nil, err_wf, errno
+			end
+			stderr = err_rf
+			self.own_stderr = true
+		elseif stderr then
+			assert(stderr.is_pipe_end)
+			assert(not stderr.read_async == not async)
+		end
+
+		self.stdin  = stdin
+		self.stdout = stdout
+		self.stderr = stderr
+
 		si = winapi.STARTUPINFO()
 		si.hStdInput  = stdin  and stdin .handle or INVALID_HANDLE_VALUE
 		si.hStdOutput = stdout and stdout.handle or INVALID_HANDLE_VALUE
 		si.hStdError  = stderr and stderr.handle or INVALID_HANDLE_VALUE
 		si.dwFlags = winapi.STARTF_USESTDHANDLES
-		--NOTE: there's no way to inherit only these std handles: all handles
+
+		--NOTE: there's no way to inherit only the std handles: all handles
 		--declared inheritable in the parent process will be inherited!
-		inherit_all_handles = true
+		inherit_handles = true
 	end
-	local proc_info, err, code = winapi.CreateProcess(cmd, env, dir, si, inherit_all_handles)
+
+	local proc_info, err, errno = winapi.CreateProcess(cmd, env, dir, si, inherit_handles)
 	if not proc_info then
-		return nil, err, code
+		close_all()
+		return nil, err, errno
 	end
-	local proc = inherit({}, proc)
-	proc.handle = proc_info.hProcess
-	proc.main_thread_handle = proc_info.hThread
-	proc.id = proc_info.dwProcessId
-	proc.main_thread_id = proc_info.dwThreadId
-	return proc
+
+	--let the child process have the only handles to their pipe ends,
+	--otherwise when the child process exits, the pipes will stay open on
+	--account of us (the parent process) holding a handle to them.
+	if inp_rf then inp_rf:close() end
+	if out_wf then out_wf:close() end
+	if err_wf then err_wf:close() end
+
+	self.handle = proc_info.hProcess
+	self.main_thread_handle = proc_info.hThread
+	self.id = proc_info.dwProcessId
+	self.main_thread_id = proc_info.dwThreadId
+
+	return self
 end
 
 function proc:forget()
-	if not self.handle then return end
-	assert(winapi.CloseHandle(self.handle))
-	assert(winapi.CloseHandle(self.main_thread_handle))
-	self.handle = false
-	self.id = false
-	self.main_thread_handle = false
-	self.main_thread_id = false
+	if self.stdin  and self.own_stdin  then self.stdin :close() end
+	if self.stdout and self.own_stdout then self.stdout:close() end
+	if self.stderr and self.own_stderr then self.stderr:close() end
+	if self.handle then
+		assert(winapi.CloseHandle(self.handle))
+		assert(winapi.CloseHandle(self.main_thread_handle))
+		self.handle = false
+		self.id = false
+		self.main_thread_handle = false
+		self.main_thread_id = false
+	end
 end
 
 --compound the STILL_ACTIVE hack with another hack to signal killed status.
@@ -105,9 +204,24 @@ local EXIT_CODE_KILLED = winapi.STILL_ACTIVE + 1
 
 function proc:kill()
 	if not self.handle then
-		return nil, 'invalid handle'
+		return nil, 'forgotten'
 	end
 	return winapi.TerminateProcess(self.handle, EXIT_CODE_KILLED)
+end
+
+function proc:wait(expires)
+	if not self.handle then
+		return nil, 'forgotten'
+	end
+	while self:status() == 'active' do
+		self.sleep(0.01)
+	end
+	local exit_code, err = self:exit_code()
+	if exit_code then
+		return exit_code
+	else
+		return nil, err
+	end
 end
 
 function proc:exit_code()
@@ -117,7 +231,7 @@ function proc:exit_code()
 		return nil, 'killed'
 	end
 	if not self.handle then
-		return nil, 'invalid handle'
+		return nil, 'forgotten'
 	end
 	local exitcode = winapi.GetExitCodeProcess(self.handle)
 	if not exitcode then
@@ -133,161 +247,11 @@ function proc:exit_code()
 	return self:exit_code()
 end
 
-function M.popen_async(cmd, args, env, dir,
-	open_stdin, open_stdout, open_stderr, autokill, inherit_all_handles)
-
-	local fs = require'fs'
-
-	local in_rf, in_wf
-	local out_rf, out_wf
-	local err_rf, err_wf
-	local p, err, errno
-
-	local function close_all()
-		if in_rf  then in_rf :close() end
-		if in_wf  then in_wf :close() end
-		if out_rf then out_rf:close() end
-		if out_wf then out_wf:close() end
-		if err_rf then err_rf:close() end
-		if err_wf then err_wf:close() end
-	end
-
-	local function try(ret, ...)
-		if not ret then
-			close_all()
-		end
-		return ret, ...
-	end
-
-	if open_stdin then
-		in_rf, in_wf, errno = try(fs.pipe{
-			write_async = true,
-			read_inheritable = true,
-		})
-		if not in_rf then
-			return nil, in_wf, errno
-		end
-	end
-
-	if open_stdout then
-		out_rf, out_wf, errcode = try(fs.pipe{
-			read_async = true,
-			write_inheritable = true,
-		})
-		if not out_rf then
-			return nil, out_wf, errno
-		end
-	end
-
-	if open_stderr then
-		err_rf, err_wf, errno = try(fs.pipe{
-			read_async = true,
-			write_inheritable = true,
-		})
-		if not err_rf then
-			return nil, err_wf, errno
-		end
-	end
-
-	p, err, errno = try(M.exec(cmd, args, env, dir,
-		in_rf, out_wf, err_wf, autokill, inherit_all_handles))
-	if not p then
-		return nil, err, errno
-	end
-
-	local forget = p.forget
-	function p:forget()
-		close_all()
-		return forget(p)
-	end
-
-	local kill = p.kill
-	function p:kill()
-		close_all()
-		return kill(p)
-	end
-
-	--let the child process have the only handles to these pipe end points,
-	--otherwise when the child process exits, the pipes will stay open on
-	--account of us (the parent process) holding a handle to them.
-	if in_rf then in_rf:close() end
-	if out_wf then out_wf:close() end
-	if err_wf then err_wf:close() end
-
-	--allow a function's `buf, sz` args to be `s, [len]`.
-	local function stringdata(buf, sz)
-		if type(buf) == 'string' then
-			if sz then
-				assert(sz <= #buf, 'string too short')
-			else
-				sz = #buf
-			end
-			return ffi.cast('char*', buf), sz
-		else
-			assert(type(buf) == 'cdata', type(buf))
-			assert(type(sz) == 'number', type(sz))
-			return buf, sz
-		end
-	end
-
-	local function writeall(wf, s, len, expires)
-		local buf, sz = stringdata(s, len)
-		while sz > 0 do
-			local len, err, errno = wf:write_async(buf, sz, expires)
-			if not len then return nil, err, errno end
-			buf = buf + len
-			sz  = sz  - len
-		end
-		return true
-	end
-
-	local function write_func(wf)
-		return wf and function(self, s, len, expires)
-			if not s then
-				wf:close()
-				return true
-			end
-			local ok, err, errno = writeall(wf, s, len, expires)
-			if not ok then
-				wf:close()
-				return nil, err, errno
-			end
-			return ok
-		end
-	end
-
-	local function read_func(rf)
-		return rf and function(self, buf, sz, expires)
-			if buf == '*a' then --read all till the pipe breaks.
-				local t = {}
-				local sz = 4096
-				local buf = ffi.new('char[?]', sz)
-				while true do
-					local len, err, errno = rf:read_async(buf, sz, expires)
-					if not len then
-						if err == 'broken_pipe' then
-							break
-						else
-							rf:close()
-							return nil, err, errno
-						end
-					end
-					t[#t+1] = ffi.string(buf, len)
-				end
-				rf:close()
-				return table.concat(t)
-			else
-				return rf:read_async(buf, sz, expires)
-			end
-		end
-	end
-
-	p.read_stdout = read_func(out_rf)
-	p.read_stderr = read_func(err_rf)
-	p.write_stdin = write_func(in_wf)
-
-	return p
+function proc:status() --finished | killed | active | forgotten
+	local x, err = self:exit_code()
+	return x and 'finished' or err
 end
+
 
 elseif ffi.os == 'Linux' or ffi.os == 'OSX' then -----------------------------
 
@@ -384,7 +348,29 @@ function getcwd()
 	end
 end
 
-function M.exec(cmd, args, env, dir, stdin, stdout, stderr, autokill, inherit_all_handles)
+function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_handles)
+
+	local cmd, args
+	if type(t) == 'table' then
+		cmd = t[1]
+		if #t > 1 then
+			args = {}
+			for i = 2, #t do
+				args[i-1] = t[i]
+			end
+		end
+	else
+		for s in t:match'[^%s]+' do
+			if not cmd then
+				cmd = s
+			else
+				if not args then
+					args = {}
+				end
+				args[#args+1] = s
+			end
+		end
+	end
 
 	if dir and cmd:sub(1, 1) ~= '/' then
 		cmd = getcwd() .. '/' .. cmd
@@ -515,7 +501,7 @@ end
 
 function proc:kill()
 	if not self.id then
-		return nil, 'invalid pid'
+		return nil, 'forgotten'
 	end
 	if C.kill(self.id, SIGKILL) ~= 0 then
 		return err'kill'
@@ -530,7 +516,7 @@ function proc:exit_code()
 		return nil, 'killed'
 	end
 	if not self.id then
-		return nil, 'invalid pid'
+		return nil, 'forgotten'
 	end
 	local status = int(1)
 	local pid = C.waitpid(self.id, status, WNOHANG)
@@ -550,50 +536,39 @@ function proc:exit_code()
 	return self:exit_code()
 end
 
+function proc:wait(timeout)
+	if not self.id then
+		return nil, 'forgotten'
+	end
+end
+
 else
 	error('unsupported OS '..ffi.os)
 end
 
-local function exec_args(std_prefix, cmd_field, cmd, args, env, dir,
-	stdin, stdout, stderr, autokill, inherit_all_handles
-)
-	if type(cmd) == 'table' then
-		local t = cmd
-		cmd      = t[cmd_field]
-		args     = t.args
-		env      = t.env
-		dir      = t.dir
-		stdin    = t[std_prefix..'stdin']
-		stdout   = t[std_prefix..'stdout']
-		stderr   = t[std_prefix..'stderr']
-		autokill = t.autokill
-		inherit_all_handles = t.inherit_all_handles
-	end
-	assert(cmd)
-	return cmd, args, env, dir, stdin, stdout, stderr, autokill, inherit_all_handles
-end
+--wrappers -------------------------------------------------------------------
 
 local exec = M.exec
-function M.exec(...)
-	return exec(exec_args('', 'command', ...))
-end
-
-local popen_async = M.popen_async
-function M.popen_async(...)
-	return popen_async(exec_args('open_', 'command', ...))
-end
-
-function M.exec_luafile(...)
-	local function pass(script, args, ...)
-		local exepath = require'package.exepath'
-		local args = extend({script}, args)
-		return M.exec(exepath, args, ...)
+function M.exec(t, ...)
+	if type(t) == 'table' then
+		return t.cmd, t.env, t.dir, t.stdin, t.stdout, t.stderr,
+			t.autokill, t.async, t.inherit_handles
+	else
+		return t, ...
 	end
-	return pass(exec_args('', 'script', ...))
 end
 
-function M.popen_async_luafile(...)
-
+function M.exec_luafile(arg, ...)
+	local exepath = require'package.exepath'
+	local script = type(arg) == 'string' and arg or arg.script
+	local cmd = type(script) == 'string' and {exepath, script} or extend({exepath}, script)
+	if type(arg) == 'string' then
+		return M.exec(cmd, ...)
+	else
+		local t = {cmd = cmd}
+		for k,v in pairs(arg) do t[k] = v end
+		return M.exec(t)
+	end
 end
 
 return M

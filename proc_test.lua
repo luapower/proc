@@ -42,8 +42,7 @@ function test.kill()
 	local luajit = fs.exepath()
 
 	local p, err, errno = proc.exec(
-		luajit,
-		{'-e', 'local n=.12; for i=1,1000000000 do n=n*0.5321 end; print(n); os.exit(123)'},
+		{luajit, '-e', 'local n=.12; for i=1,1000000000 do n=n*0.5321 end; print(n); os.exit(123)'},
 		--{'-e', 'print(os.getenv\'XX\', require\'fs\'.cd()); os.exit(123)'},
 		{XX = 55},
 		'bin'
