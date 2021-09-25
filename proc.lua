@@ -24,6 +24,7 @@ if ffi.os == 'Windows' then --------------------------------------------------
 --TODO: move relevant ctypes here and get rid of the huge dependency.
 local winapi = require'winapi'
 require'winapi.process'
+require'winapi.thread'
 
 function M.env(k)
 	if k then
@@ -44,10 +45,6 @@ function M.setenv(k, v)
 	winapi.SetEnvironmentVariable(k, v)
 end
 
---TODO: autokill with job objects:
---https://stackoverflow.com/questions/2345034/terminate-all-grandchildren-when-terminating-a-child-process
---NOTE: with this solution you can't run processes that use jobs themselves until Win8.
-
 --TODO: could probably spend more time on this...
 local function esc(s)
 	s = s:gsub('(["&<>^|])', '^%1')
@@ -58,6 +55,8 @@ local function esc(s)
 end
 
 local INVALID_HANDLE_VALUE = ffi.cast('HANDLE', -1)
+
+local autokill_job
 
 function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_handles)
 
@@ -92,21 +91,19 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 		self.sleep = time.sleep
 	end
 
-	local si
+	local si, err, errcode
 
 	if stdin or stdout or stderr then
 
-		local errno
-
 		if stdin == true then
 			local fs = require'fs'
-			inp_rf, inp_wf, errno = fs.pipe{
+			inp_rf, inp_wf, errcode = fs.pipe{
 				write_async = async,
 				read_inheritable = true,
 			}
 			if not inp_rf then
 				close_all()
-				return nil, inp_wf, errno
+				return nil, inp_wf, errcode
 			end
 			stdin = inp_wf
 			self.own_stdin = true
@@ -123,7 +120,7 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 			}
 			if not out_rf then
 				close_all()
-				return nil, out_wf, errno
+				return nil, out_wf, errcode
 			end
 			stdout = out_rf
 			self.own_stdout = true
@@ -134,13 +131,13 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 
 		if stderr == true then
 			local fs = require'fs'
-			err_rf, err_wf, errno = fs.pipe{
+			err_rf, err_wf, errcode = fs.pipe{
 				read_async = async,
 				write_inheritable = true,
 			}
 			if not err_rf then
 				close_all()
-				return nil, err_wf, errno
+				return nil, err_wf, errcode
 			end
 			stderr = err_rf
 			self.own_stderr = true
@@ -164,10 +161,32 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 		inherit_handles = true
 	end
 
-	local proc_info, err, errno = winapi.CreateProcess(cmd, env, dir, si, inherit_handles)
-	if not proc_info then
+	if autokill and not autokill_job then
+		autokill_job = winapi.CreateJobObject()
+		local jeli = winapi.JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+		jeli.BasicLimitInformation.LimitFlags = winapi.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+		winapi.SetInformationJobObject(autokill_job, winapi.C.JobObjectExtendedLimitInformation, jeli)
+	end
+
+	local is_in_job = autokill and winapi.IsProcessInJob(winapi.GetCurrentProcess(), nil)
+
+	local pi, err, errcode = winapi.CreateProcess(
+		cmd, env, dir, si, inherit_handles,
+			autokill
+				and bit.bor(
+					winapi.CREATE_SUSPENDED, --so we have time to assign it to a job
+					is_in_job and winapi.CREATE_BREAKAWAY_FROM_JOB or 0
+				)
+				or nil)
+
+	if not pi then
 		close_all()
-		return nil, err, errno
+		return nil, err, errcode
+	end
+
+	if autokill then
+		winapi.AssignProcessToJobObject(autokill_job, pi.hProcess)
+		winapi.ResumeThread(pi.hThread)
 	end
 
 	--let the child process have the only handles to their pipe ends,
@@ -177,10 +196,10 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 	if out_wf then out_wf:close() end
 	if err_wf then err_wf:close() end
 
-	self.handle = proc_info.hProcess
-	self.main_thread_handle = proc_info.hThread
-	self.id = proc_info.dwProcessId
-	self.main_thread_id = proc_info.dwThreadId
+	self.handle             = pi.hProcess
+	self.main_thread_handle = pi.hThread
+	self.id                 = pi.dwProcessId
+	self.main_thread_id     = pi.dwThreadId
 
 	return self
 end
@@ -551,10 +570,10 @@ end
 local exec = M.exec
 function M.exec(t, ...)
 	if type(t) == 'table' then
-		return t.cmd, t.env, t.dir, t.stdin, t.stdout, t.stderr,
-			t.autokill, t.async, t.inherit_handles
+		return exec(t.cmd, t.env, t.dir, t.stdin, t.stdout, t.stderr,
+			t.autokill, t.async, t.inherit_handles)
 	else
-		return t, ...
+		return exec(t, ...)
 	end
 end
 

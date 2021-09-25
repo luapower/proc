@@ -76,7 +76,8 @@ print'Hello'
 		script = 'proc_test_pipe.lua',
 		stdin = in_rf,
 		stdout = out_wf,
-		stderr = err_wf
+		stderr = err_wf,
+		autokill = true,
 	}))
 
 	--required in Windows to avoid hanging.
@@ -101,7 +102,9 @@ print'Hello'
 end
 
 function test.autokill()
-	--
+	assert(proc.exec{cmd = 'notepad', autokill = true})
+	time.sleep(1)
+	print'done'
 end
 
 function test_all()
@@ -113,8 +116,8 @@ function test_all()
 	end
 end
 
-test.pipe()
+--test.pipe()
 
---test.autokill()
+test.autokill()
 
 --test_all()
