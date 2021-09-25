@@ -14,7 +14,6 @@ Works on Windows, Linux and OSX.
 Missing features:
 
   * named mutexes, semaphores and events.
-  * kill child process automatically when the parent process exits.
   * setting CPU and RAM limits.
   * CPU and RAM monitoring.
 
