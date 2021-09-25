@@ -102,8 +102,15 @@ print'Hello'
 end
 
 function test.autokill()
-	assert(proc.exec{cmd = 'notepad', autokill = true})
-	time.sleep(1)
+	if ffi.abi'win' then
+		assert(proc.exec{cmd = 'notepad', autokill = true})
+		print'waiting 1s'
+		time.sleep(1)
+	else
+		assert(proc.exec{cmd = '/bin/sleep 123', autokill = true})
+		print'waiting 5s'
+		time.sleep(5)
+	end
 	print'done'
 end
 

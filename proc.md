@@ -83,3 +83,13 @@ and signals that the child process closed its end of the pipe.
 #### Cleaning up
 
 Always call forget() when you're done with the process, even after you killed it.
+
+#### Autkill caveats
+
+In Linux, if you start your autokilled process from a thread other than
+the main thread, the process is killed when the thread finishes, IOW
+autokill is only portable if you start processes from the main thread.
+
+In Windows, the autokill behavior is by default inherited by the child
+processes. In Linux it isn't. IOW autkill inheritance is not portable.
+

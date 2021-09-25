@@ -58,6 +58,11 @@ local INVALID_HANDLE_VALUE = ffi.cast('HANDLE', -1)
 
 local autokill_job
 
+local error_classes = {
+	[0x002] = 'not_found', --ERROR_FILE_NOT_FOUND
+	[0x005] = 'access_denied', --ERROR_ACCESS_DENIED
+}
+
 function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_handles)
 
 	if type(cmd) == 'table' then
@@ -83,12 +88,14 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 
 	local self = inherit({async = async}, proc)
 
-	if async and not M._async_wait then
+	if async then
 		local sock = require'sock'
-		self.sleep = sock.sleep
+		self._sleep = sock.sleep
+		self._clock = sock.clock
 	else
 		local time = require'time'
-		self.sleep = time.sleep
+		self._sleep = time.sleep
+		self._clock = time.clock
 	end
 
 	local si, err, errcode
@@ -181,6 +188,7 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 
 	if not pi then
 		close_all()
+		err = error_classes[errcode] or err
 		return nil, err, errcode
 	end
 
@@ -228,21 +236,6 @@ function proc:kill()
 	return winapi.TerminateProcess(self.handle, EXIT_CODE_KILLED)
 end
 
-function proc:wait(expires)
-	if not self.handle then
-		return nil, 'forgotten'
-	end
-	while self:status() == 'active' do
-		self.sleep(0.01)
-	end
-	local exit_code, err = self:exit_code()
-	if exit_code then
-		return exit_code
-	else
-		return nil, err
-	end
-end
-
 function proc:exit_code()
 	if self._exit_code then
 		return self._exit_code
@@ -266,11 +259,25 @@ function proc:exit_code()
 	return self:exit_code()
 end
 
+function proc:wait(expires)
+	if not self.handle then
+		return nil, 'forgotten'
+	end
+	while self:status() == 'active' and self._clock() < expires do
+		self._sleep(0.01)
+	end
+	local exit_code, err = self:exit_code()
+	if exit_code then
+		return exit_code
+	else
+		return nil, err
+	end
+end
+
 function proc:status() --finished | killed | active | forgotten
 	local x, err = self:exit_code()
 	return x and 'finished' or err
 end
-
 
 elseif ffi.os == 'Linux' or ffi.os == 'OSX' then -----------------------------
 
@@ -310,6 +317,12 @@ local WNOHANG = 1
 local EAGAIN = 11
 local EINTR  = 4
 local ERANGE = 34
+
+local error_classes = {
+	[ 1] = 'access_denied', --EPERM (need root)
+	[ 2] = 'not_found', --ENOENT
+	[13] = 'access_denied', --EACCES (file perms)
+}
 
 local C = ffi.C
 
@@ -379,7 +392,7 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 			end
 		end
 	else
-		for s in t:match'[^%s]+' do
+		for s in t:gmatch'[^%s]+' do
 			if not cmd then
 				cmd = s
 			else
@@ -465,8 +478,10 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 	elseif pid == 0 then --in child process
 
 		--see https://stackoverflow.com/questions/284325/how-to-make-child-process-die-after-parent-exits/36945270#36945270
+		--TODO: prctl() must be called from the main thread. If instead it is
+		--called from a secondary thread, the process will die with that thread !!
 		if autokill then
-			if C.prctl(PR_SET_PDEATHSIG, SIGTERM) == -1 then
+			if C.prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0) == -1 then
 				return err'prctl'
 			end
 			-- test if the original parent exited just before the prctl() call.
@@ -506,11 +521,24 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		until not (n == -1 and (ffi.errno() == EAGAIN or ffi.errno() == EINTR))
 		C.close(pipefds[0])
 		if n > 0 then
-			return nil, 'exec() failed', err[0]
+			local errno = err[0]
+			local err = error_classes[errno] or 'exec() failed'
+			return nil, err, errno
 		end
 
-		return inherit({id = pid}, proc)
+		local self = inherit({id = pid}, proc)
 
+		if async then
+			local sock = require'sock'
+			self._sleep = sock.sleep
+			self._clock = sock.clock
+		else
+			local time = require'time'
+			self._sleep = time.sleep
+			self._clock = time.clock
+		end
+
+		return self
 	end
 end
 
@@ -555,10 +583,24 @@ function proc:exit_code()
 	return self:exit_code()
 end
 
-function proc:wait(timeout)
+function proc:wait(expires)
 	if not self.id then
 		return nil, 'forgotten'
 	end
+	while self:status() == 'active' and self._clock() < expires do
+		self._sleep(0.01)
+	end
+	local exit_code, err = self:exit_code()
+	if exit_code then
+		return exit_code
+	else
+		return nil, err
+	end
+end
+
+function proc:status() --finished | killed | active | forgotten
+	local x, err = self:exit_code()
+	return x and 'finished' or err
 end
 
 else
