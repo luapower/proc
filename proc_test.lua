@@ -67,26 +67,36 @@ function test.pipe()
 	local out_rf, out_wf = fs.pipe()
 	local err_rf, err_wf = fs.pipe()
 
+	io.stdin:setvbuf'no'
+	io.stdout:setvbuf'no'
+	io.stderr:setvbuf'no'
+
 	assert(glue.writefile('proc_test_pipe.lua', [[
-io.stdout:write(io.stdin:read('*n'))
+io.stdin:setvbuf'no'
+io.stdout:setvbuf'no'
+io.stderr:setvbuf'no'
+n = io.stdin:read('*n')
+io.stderr:write'Error\r\n\r\n'
 print'Hello'
+os.exit(123)
 ]]))
 
 	local p = assert(proc.exec_luafile({
 		script = 'proc_test_pipe.lua',
 		stdin = in_rf,
 		stdout = out_wf,
-		stderr = err_wf,
+		--stderr = err_wf,
 		autokill = true,
 	}))
 
-	--required in Windows to avoid hanging.
+	--required to avoid hanging.
 	in_rf:close()
-	err_wf:close()
 	out_wf:close()
+	err_wf:close()
 
 	local s = '1234\n'
-	in_wf:write(s, #s)
+	in_wf:write(s)
+	in_wf:close()
 
 	local cb = ffi.new('uint8_t[1]')
 	while true do
@@ -98,7 +108,66 @@ print'Hello'
 		io.stdout:write(c)
 	end
 
+	print('exit code', p:wait(1/0))
+
 	assert(os.remove('proc_test_pipe.lua'))
+end
+
+function test.pipe_async()
+
+	local sock = require'sock'
+
+	io.stdin:setvbuf'no'
+	io.stdout:setvbuf'no'
+	io.stderr:setvbuf'no'
+
+	assert(glue.writefile('proc_test_pipe.lua', [[
+io.stdin:setvbuf'no'
+io.stdout:setvbuf'no'
+io.stderr:setvbuf'no'
+print'Started'
+local n = assert(io.stdin:read('*n'))
+io.stderr:write'Error\n'
+print'Hello'
+os.exit(123)
+]]))
+
+	local p = assert(proc.exec_luafile({
+		script = 'proc_test_pipe.lua',
+		--async = true,
+		stdin = true,
+		stdout = true,
+		stderr = true,
+		autokill = true,
+	}))
+
+	if p.stdin then
+		sock.thread(function()
+			local s = '1234\n'
+			assert(p.stdin:write(s))
+		end)
+	end
+
+	if p.stdout then
+		sock.thread(function()
+			print('stdout:', ffi.string(assert(glue.readall(p.stdout.read, p.stdout))))
+		end)
+	end
+
+	if p.stderr then
+		sock.thread(function()
+			print('stderr:', ffi.string(assert(glue.readall(p.stderr.read, p.stderr))))
+		end)
+	end
+
+	sock.thread(function()
+		print('exit code', p:wait(1/0))
+		assert(os.remove('proc_test_pipe.lua'))
+	end)
+
+	sock.start()
+	print'done'
+
 end
 
 function test.autokill()
@@ -124,7 +193,6 @@ function test_all()
 end
 
 --test.pipe()
-
-test.autokill()
-
+test.pipe_async()
+--test.autokill()
 --test_all()

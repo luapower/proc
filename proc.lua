@@ -54,8 +54,6 @@ local function esc(s)
 	return s
 end
 
-local INVALID_HANDLE_VALUE = ffi.cast('HANDLE', -1)
-
 local autokill_job
 
 local error_classes = {
@@ -78,12 +76,18 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 	local err_rf, err_wf
 
 	local function close_all()
-		if inp_rf then inp_rf:close() end
-		if inp_wf then inp_wf:close() end
-		if out_rf then out_rf:close() end
-		if out_wf then out_wf:close() end
-		if err_rf then err_rf:close() end
-		if err_wf then err_wf:close() end
+		if self.stdin then
+			inp_rf:close()
+			inp_wf:close()
+		end
+		if self.stdout then
+			out_rf:close()
+			out_wf:close()
+		end
+		if self.stderr then
+			err_rf:close()
+			err_wf:close()
+		end
 	end
 
 	local self = inherit({async = async}, proc)
@@ -98,69 +102,65 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 		self._clock = time.clock
 	end
 
-	local si, err, errcode
+	local si
 
 	if stdin or stdout or stderr then
 
 		if stdin == true then
 			local fs = require'fs'
-			inp_rf, inp_wf, errcode = fs.pipe{
+			inp_rf, inp_wf = fs.pipe{
 				write_async = async,
 				read_inheritable = true,
 			}
 			if not inp_rf then
 				close_all()
-				return nil, inp_wf, errcode
+				return nil, inp_wf
 			end
-			stdin = inp_wf
-			self.own_stdin = true
+			self.stdin = inp_wf
 		elseif stdin then
 			assert(stdin.is_pipe_end)
-			assert(not stdin.write_async == not async)
+			stdin:set_inheritable(true)
+			inp_rf = stdin
 		end
 
 		if stdout == true then
 			local fs = require'fs'
-			out_rf, out_wf, errcode = fs.pipe{
+			out_rf, out_wf = fs.pipe{
 				read_async = async,
 				write_inheritable = true,
 			}
 			if not out_rf then
 				close_all()
-				return nil, out_wf, errcode
+				return nil, out_wf
 			end
-			stdout = out_rf
-			self.own_stdout = true
+			self.stdout = out_rf
 		elseif stdout then
 			assert(stdout.is_pipe_end)
-			assert(not stdout.read_async == not async)
+			stdout:set_inheritable(true)
+			out_wf = stdout
 		end
 
 		if stderr == true then
 			local fs = require'fs'
-			err_rf, err_wf, errcode = fs.pipe{
+			err_rf, err_wf = fs.pipe{
 				read_async = async,
 				write_inheritable = true,
 			}
 			if not err_rf then
 				close_all()
-				return nil, err_wf, errcode
+				return nil, err_wf
 			end
-			stderr = err_rf
-			self.own_stderr = true
+			self.stderr = err_rf
 		elseif stderr then
 			assert(stderr.is_pipe_end)
-			assert(not stderr.read_async == not async)
+			stderr:set_inheritable(true)
+			err_wf = stderr
 		end
 
-		self.stdin  = stdin
-		self.stdout = stdout
-		self.stderr = stderr
-
 		si = winapi.STARTUPINFO()
-		si.hStdInput  = stdin  and stdin .handle or INVALID_HANDLE_VALUE
-		si.hStdOutput = stdout and stdout.handle or INVALID_HANDLE_VALUE
-		si.hStdError  = stderr and stderr.handle or INVALID_HANDLE_VALUE
+		si.hStdInput  = inp_rf and inp_rf.handle or winapi.GetStdHandle(winapi.STD_INPUT_HANDLE)
+		si.hStdOutput = out_wf and out_wf.handle or winapi.GetStdHandle(winapi.STD_OUTPUT_HANDLE)
+		si.hStdError  = err_wf and err_wf.handle or winapi.GetStdHandle(winapi.STD_ERROR_HANDLE)
 		si.dwFlags = winapi.STARTF_USESTDHANDLES
 
 		--NOTE: there's no way to inherit only the std handles: all handles
@@ -181,15 +181,14 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 		cmd, env, dir, si, inherit_handles,
 			autokill
 				and bit.bor(
-					winapi.CREATE_SUSPENDED, --so we have time to assign it to a job
+					winapi.CREATE_SUSPENDED, --so we can add it to a job before it starts
 					is_in_job and winapi.CREATE_BREAKAWAY_FROM_JOB or 0
 				)
 				or nil)
 
 	if not pi then
 		close_all()
-		err = error_classes[errcode] or err
-		return nil, err, errcode
+		return nil, error_classes[errcode] or err
 	end
 
 	if autokill then
@@ -213,9 +212,9 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 end
 
 function proc:forget()
-	if self.stdin  and self.own_stdin  then self.stdin :close() end
-	if self.stdout and self.own_stdout then self.stdout:close() end
-	if self.stderr and self.own_stderr then self.stderr:close() end
+	if self.stdin  then self.stdin :close() end
+	if self.stdout then self.stdout:close() end
+	if self.stderr then self.stderr:close() end
 	if self.handle then
 		assert(winapi.CloseHandle(self.handle))
 		assert(winapi.CloseHandle(self.main_thread_handle))
@@ -275,8 +274,8 @@ function proc:wait(expires)
 end
 
 function proc:status() --finished | killed | active | forgotten
-	local x, err = self:exit_code()
-	return x and 'finished' or err
+	local code, err = self:exit_code()
+	return code and 'finished' or err
 end
 
 elseif ffi.os == 'Linux' or ffi.os == 'OSX' then -----------------------------
@@ -330,11 +329,14 @@ local char     = ffi.typeof'char[?]'
 local char_ptr = ffi.typeof'char*[?]'
 local int      = ffi.typeof'int[?]'
 
-local function err(func)
-	local errno = ffi.errno()
+local function check(ret, errno)
+	if ret then return ret end
+	errno = errno or ffi.errno()
+	local s = error_classes[errno]
+	if s then return nil, s end
 	local s = C.strerror(errno)
 	local s = s ~= nil and ffi.string(s) or 'Error '..errno
-	return nil, func .. '() failed: ' .. s, errno
+	return nil, s
 end
 
 function M.env(k)
@@ -370,7 +372,7 @@ function getcwd()
 	while true do
 		if C.getcwd(buf, sz) == nil then
 			if ffi.errno() ~= ERANGE then
-				return err'getcwd'
+				return check()
 			else
 				sz = sz * 2
 				buf = char(sz)
@@ -460,12 +462,12 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 	--see https://stackoverflow.com/questions/1584956/how-to-handle-execvp-errors-after-fork
 	local pipefds = int(2)
 	if C.pipe(pipefds) ~= 0 then
-		return err'pipe'
+		return check()
 	end
 	local flags = C.fcntl(pipefds[1], F_GETFD)
 	local flags = bit.bor(flags, FD_CLOEXEC)
 	if C.fcntl(pipefds[1], F_SETFD, ffi.cast('int', flags)) ~= 0 then
-		return err'fcnt'
+		return check()
  	end
 
 	local ppid_before_fork = autokill and C.getpid()
@@ -473,7 +475,7 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 
 	if pid == -1 then --in parent process
 
-		return err'fork'
+		return check()
 
 	elseif pid == 0 then --in child process
 
@@ -482,7 +484,7 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		--called from a secondary thread, the process will die with that thread !!
 		if autokill then
 			if C.prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0) == -1 then
-				return err'prctl'
+				return check()
 			end
 			-- test if the original parent exited just before the prctl() call.
 			if C.getppid() ~= ppid_before_fork then
@@ -522,8 +524,7 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		C.close(pipefds[0])
 		if n > 0 then
 			local errno = err[0]
-			local err = error_classes[errno] or 'exec() failed'
-			return nil, err, errno
+			return check(nil, errno)
 		end
 
 		local self = inherit({id = pid}, proc)
@@ -550,10 +551,7 @@ function proc:kill()
 	if not self.id then
 		return nil, 'forgotten'
 	end
-	if C.kill(self.id, SIGKILL) ~= 0 then
-		return err'kill'
-	end
-	return true
+	return check(C.kill(self.id, SIGKILL) ~= 0)
 end
 
 function proc:exit_code()
@@ -568,7 +566,7 @@ function proc:exit_code()
 	local status = int(1)
 	local pid = C.waitpid(self.id, status, WNOHANG)
 	if pid < 0 then
-		return err'waitpid'
+		return check()
 	end
 	if pid == 0 then
 		return nil, 'active'

@@ -45,7 +45,8 @@ process. Options can be given as separate args or in a table.
   * `cur_dir` is the directory to start the process in.
   * `stdin`, `stdout`, `stderr` are pipe ends created with `fs.pipe()`
   to redirect the standard input, output and error streams of the process;
-  you can also set any of these to `true` to have them opened (and closed) for you.
+  you can also set any of these to `true` to have them opened (and closed)
+  for you.
   * `autokill` kills the process when the calling process exits.
 
 ## Programming Notes
