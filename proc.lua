@@ -382,8 +382,8 @@ local function getcwd()
 	end
 end
 
-local function close(fd)
-	return check(C.close(fd) == 0)
+local function close_fd(fd)
+	return C.close(fd) == 0
 end
 
 function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_handles)
@@ -501,8 +501,8 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 			assert(err_wf:close())
 		end
 
-		if errno_r_fd then assert(close(errno_r_fd)) end
-		if errno_w_fd then assert(close(errno_w_fd)) end
+		if errno_r_fd then assert(check_(close_fd(errno_r_fd))) end
+		if errno_w_fd then assert(check_(close_fd(errno_w_fd))) end
 
 		return ret, err
 	end
@@ -574,7 +574,7 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 			if ret then return ret end
 			local err = int(1, err or ffi.errno())
 			C.write(errno_w_fd, err, ffi.sizeof(err))
-				--^^ this might fail but it should not block.
+				--^^ this can fail but it should not block.
 			C._exit(0)
 		end
 
@@ -589,14 +589,18 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 			end
 		end
 
-		assert(close(errno_r_fd))
+		check(close_fd(errno_r_fd))
 		errno_r_fd = nil
 
 		check(not dir or C.chdir(dir) == 0)
 
-		if inp_rf then C.dup2(inp_rf.fd, 0) end
-		if out_wf then C.dup2(out_wf.fd, 1) end
-		if err_wf then C.dup2(err_wf.fd, 2) end
+		if inp_rf then check(C.dup2(inp_rf.fd, 0) >= 0) end
+		if out_wf then check(C.dup2(out_wf.fd, 1) >= 0) end
+		if err_wf then check(C.dup2(err_wf.fd, 2) >= 0) end
+
+		if inp_rf then assert(inp_rf:close()) end
+		if out_wf then assert(out_wf:close()) end
+		if err_wf then assert(err_wf:close()) end
 
 		C.execve(cmd, arg_ptr, env_ptr)
 
@@ -606,14 +610,14 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 	else --in parent process
 
 		--check if exec failed by reading from the errno pipe.
-		assert(close(errno_w_fd))
+		assert(check(close_fd(errno_w_fd)))
 		errno_w_fd = nil
 		local err = int(1)
 		local n
 		repeat
 			n = C.read(errno_r_fd, err, ffi.sizeof(err))
 		until not (n == -1 and (ffi.errno() == EAGAIN or ffi.errno() == EINTR))
-		assert(close(errno_r_fd))
+		assert(check(close_fd(errno_r_fd)))
 		errno_r_fd = nil
 		if n > 0 then
 			return check(nil, err[0])
@@ -622,9 +626,9 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		--Let the child process have the only handles to their pipe ends,
 		--otherwise when the child process exits, the pipes will stay open on
 		--account of us (the parent process) holding a handle to them.
-		if inp_rf then assert(inp_rf:close()) end
-		if out_wf then assert(out_wf:close()) end
-		if err_wf then assert(err_wf:close()) end
+		if inp_rf then assert(inp_rf:close())  end
+		if out_wf then assert(out_wf:close())  end
+		if err_wf then assert(err_wf:close())  end
 
 		self.id = pid
 

@@ -126,19 +126,23 @@ io.stdin:setvbuf'no'
 io.stdout:setvbuf'no'
 io.stderr:setvbuf'no'
 local time = require'time'
-time.sleep(1)
+time.sleep(.1)
 print'Started'
-time.sleep(1)
+time.sleep(.1)
 local n = assert(io.stdin:read('*n'))
 print('Got '..n)
-time.sleep(1)
+time.sleep(.1)
 io.stderr:write'Error1\n'
-time.sleep(1)
+time.sleep(.1)
 print'Hello1'
-time.sleep(1)
+time.sleep(.1)
 io.stderr:write'Error2\n'
-time.sleep(1)
+time.sleep(.1)
 print'Hello2'
+io.stderr:write'Error3\n'
+time.sleep(.1)
+print'Hello3'
+time.sleep(.1)
 os.exit(123)
 ]]))
 
@@ -167,7 +171,8 @@ os.exit(123)
 			sock.thread(function()
 				local buf = char_vla(sz)
 				while true do
-					local len = p.stdout:read(buf, sz)
+					local len = assert(p.stdout:read(buf, sz))
+					print('>>>>>>>>>', p.stdout.fd, len)
 					if len > 0 then
 						io.stdout:write(ffi.string(buf, len))
 					else
@@ -182,7 +187,7 @@ os.exit(123)
 			sock.thread(function()
 				local buf = char_vla(sz)
 				while true do
-					local len = p.stderr:read(buf, sz)
+					local len = assert(p.stderr:read(buf, sz))
 					if len > 0 then
 						io.stdout:write(ffi.string(buf, len))
 					else
@@ -201,6 +206,7 @@ os.exit(123)
 			or (p.stderr and not p.stderr:closed())
 		do
 			print'Still waiting for the pipes to close...'
+			print(p.stdin:closed(), p.stdout:closed(), p.stderr:closed())
 			sock.sleep(.1)
 		end
 
