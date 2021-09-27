@@ -77,16 +77,16 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 
 	local function close_all()
 		if self.stdin then
-			inp_rf:close()
-			inp_wf:close()
+			assert(inp_rf:close())
+			assert(inp_wf:close())
 		end
 		if self.stdout then
-			out_rf:close()
-			out_wf:close()
+			assert(out_rf:close())
+			assert(out_wf:close())
 		end
 		if self.stderr then
-			err_rf:close()
-			err_wf:close()
+			assert(err_rf:close())
+			assert(err_wf:close())
 		end
 	end
 
@@ -196,12 +196,12 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 		winapi.ResumeThread(pi.hThread)
 	end
 
-	--let the child process have the only handles to their pipe ends,
+	--Let the child process have the only handles to their pipe ends,
 	--otherwise when the child process exits, the pipes will stay open on
 	--account of us (the parent process) holding a handle to them.
-	if inp_rf then inp_rf:close() end
-	if out_wf then out_wf:close() end
-	if err_wf then err_wf:close() end
+	if inp_rf then assert(inp_rf:close()) end
+	if out_wf then assert(out_wf:close()) end
+	if err_wf then assert(err_wf:close()) end
 
 	self.handle             = pi.hProcess
 	self.main_thread_handle = pi.hThread
@@ -212,9 +212,9 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 end
 
 function proc:forget()
-	if self.stdin  then self.stdin :close() end
-	if self.stdout then self.stdout:close() end
-	if self.stderr then self.stderr:close() end
+	if self.stdin  then assert(self.stdin :close()) end
+	if self.stdout then assert(self.stdout:close()) end
+	if self.stderr then assert(self.stderr:close()) end
 	if self.handle then
 		assert(winapi.CloseHandle(self.handle))
 		assert(winapi.CloseHandle(self.main_thread_handle))
@@ -254,7 +254,6 @@ function proc:exit_code()
 	else
 		self._exit_code = exitcode
 	end
-	self:forget()
 	return self:exit_code()
 end
 
@@ -331,6 +330,7 @@ local int      = ffi.typeof'int[?]'
 
 local function check(ret, errno)
 	if ret then return ret end
+	if type(errno) == 'string' then return nil, errno end
 	errno = errno or ffi.errno()
 	local s = error_classes[errno]
 	if s then return nil, s end
@@ -366,7 +366,7 @@ function M.setenv(k, v)
 	end
 end
 
-function getcwd()
+local function getcwd()
 	local sz = 256
 	local buf = char(sz)
 	while true do
@@ -380,6 +380,10 @@ function getcwd()
 		end
 		return ffi.string(buf)
 	end
+end
+
+local function close(fd)
+	return check(C.close(fd) == 0)
 end
 
 function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_handles)
@@ -459,16 +463,102 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		env_ptr[m] = nil
 	end
 
+	local self = inherit({}, proc)
+
+	if async then
+		local sock = require'sock'
+		self._sleep = sock.sleep
+		self._clock = sock.clock
+	else
+		local time = require'time'
+		self._sleep = time.sleep
+		self._clock = time.clock
+	end
+
+	local errno_r_fd, errno_w_fd
+
+	local inp_rf, inp_wf
+	local out_rf, out_wf
+	local err_rf, err_wf
+
+	local check_ = check
+
+	local function check(ret, err)
+
+		if ret then return ret end
+		local ret, err = check_(ret, err)
+
+		if self.stdin then
+			assert(inp_rf:close())
+			assert(inp_wf:close())
+		end
+		if self.stdout then
+			assert(out_rf:close())
+			assert(out_wf:close())
+		end
+		if self.stderr then
+			assert(err_rf:close())
+			assert(err_wf:close())
+		end
+
+		if errno_r_fd then assert(close(errno_r_fd)) end
+		if errno_w_fd then assert(close(errno_w_fd)) end
+
+		return ret, err
+	end
+
 	--see https://stackoverflow.com/questions/1584956/how-to-handle-execvp-errors-after-fork
 	local pipefds = int(2)
 	if C.pipe(pipefds) ~= 0 then
 		return check()
 	end
-	local flags = C.fcntl(pipefds[1], F_GETFD)
-	local flags = bit.bor(flags, FD_CLOEXEC)
-	if C.fcntl(pipefds[1], F_SETFD, ffi.cast('int', flags)) ~= 0 then
+	errno_r_fd = pipefds[0]
+	errno_w_fd = pipefds[1]
+
+	local flags = C.fcntl(errno_w_fd, F_GETFD)
+	local flags = bit.bor(flags, FD_CLOEXEC) --close on exec.
+	if C.fcntl(errno_w_fd, F_SETFD, ffi.cast('int', flags)) ~= 0 then
 		return check()
  	end
+
+	if stdin == true then
+		local fs = require'fs'
+		inp_rf, inp_wf = fs.pipe{
+			write_async = async,
+		}
+		if not inp_rf then
+			return check(nil, inp_wf)
+		end
+		self.stdin = inp_wf
+	elseif stdin then
+		inp_rf = stdin
+	end
+
+	if stdout == true then
+		local fs = require'fs'
+		out_rf, out_wf = fs.pipe{
+			read_async = async,
+		}
+		if not out_rf then
+			return check(nil, out_wf)
+		end
+		self.stdout = out_rf
+	else
+		out_wf = stdout
+	end
+
+	if stderr == true then
+		local fs = require'fs'
+		err_rf, err_wf = fs.pipe{
+			read_async = async,
+		}
+		if not err_rf then
+			return check(nil, err_wf)
+		end
+		self.stderr = err_rf
+	else
+		err_wf = stderr
+	end
 
 	local ppid_before_fork = autokill and C.getpid()
 	local pid = C.fork()
@@ -479,71 +569,73 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 
 	elseif pid == 0 then --in child process
 
+		--put errno on the errno pipe and exit.
+		local function check(ret, err)
+			if ret then return ret end
+			local err = int(1, err or ffi.errno())
+			C.write(errno_w_fd, err, ffi.sizeof(err))
+				--^^ this might fail but it should not block.
+			C._exit(0)
+		end
+
 		--see https://stackoverflow.com/questions/284325/how-to-make-child-process-die-after-parent-exits/36945270#36945270
-		--TODO: prctl() must be called from the main thread. If instead it is
+		--NOTE: prctl() must be called from the main thread. If instead it is
 		--called from a secondary thread, the process will die with that thread !!
 		if autokill then
-			if C.prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0) == -1 then
-				return check()
-			end
-			-- test if the original parent exited just before the prctl() call.
+			check(C.prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0) ~= -1)
+			--exit if the parent exited just before the prctl() call.
 			if C.getppid() ~= ppid_before_fork then
 				C._exit(0)
 			end
 		end
 
-		C.close(pipefds[0])
+		assert(close(errno_r_fd))
+		errno_r_fd = nil
 
-		if dir and C.chdir(dir) ~= 0 then
-			--chdir failed: put errno on the pipe and exit.
-			local err = int(1, ffi.errno())
-			C.write(pipefds[1], err, ffi.sizeof(err))
-			C._exit(0)
-		end
+		check(not dir or C.chdir(dir) == 0)
 
-		if stdin  then C.dup2(stdin .fd, 0) end
-		if stdout then C.dup2(stdout.fd, 1) end
-		if stderr then C.dup2(stderr.fd, 2) end
+		if inp_rf then C.dup2(inp_rf.fd, 0) end
+		if out_wf then C.dup2(out_wf.fd, 1) end
+		if err_wf then C.dup2(err_wf.fd, 2) end
 
 		C.execve(cmd, arg_ptr, env_ptr)
 
-		--exec failed: put errno on the pipe and exit.
-		local err = int(1, ffi.errno())
-		C.write(pipefds[1], err, ffi.sizeof(err))
-		C._exit(0)
+		--if we got here then exec failed.
+		check()
 
 	else --in parent process
 
 		--check if exec failed by reading from the errno pipe.
-		C.close(pipefds[1])
+		assert(close(errno_w_fd))
+		errno_w_fd = nil
 		local err = int(1)
 		local n
 		repeat
-			n = C.read(pipefds[0], err, ffi.sizeof(err))
+			n = C.read(errno_r_fd, err, ffi.sizeof(err))
 		until not (n == -1 and (ffi.errno() == EAGAIN or ffi.errno() == EINTR))
-		C.close(pipefds[0])
+		assert(close(errno_r_fd))
+		errno_r_fd = nil
 		if n > 0 then
-			local errno = err[0]
-			return check(nil, errno)
+			return check(nil, err[0])
 		end
 
-		local self = inherit({id = pid}, proc)
+		--Let the child process have the only handles to their pipe ends,
+		--otherwise when the child process exits, the pipes will stay open on
+		--account of us (the parent process) holding a handle to them.
+		if inp_rf then assert(inp_rf:close()) end
+		if out_wf then assert(out_wf:close()) end
+		if err_wf then assert(err_wf:close()) end
 
-		if async then
-			local sock = require'sock'
-			self._sleep = sock.sleep
-			self._clock = sock.clock
-		else
-			local time = require'time'
-			self._sleep = time.sleep
-			self._clock = time.clock
-		end
+		self.id = pid
 
 		return self
 	end
 end
 
 function proc:forget()
+	if self.stdin  then assert(self.stdin :close()) end
+	if self.stdout then assert(self.stdout:close()) end
+	if self.stderr then assert(self.stderr:close()) end
 	self.id = false
 end
 
@@ -577,7 +669,6 @@ function proc:exit_code()
 	else
 		self._killed = true
 	end
-	self:forget()
 	return self:exit_code()
 end
 

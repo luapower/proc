@@ -125,48 +125,88 @@ function test.pipe_async()
 io.stdin:setvbuf'no'
 io.stdout:setvbuf'no'
 io.stderr:setvbuf'no'
+local time = require'time'
+time.sleep(1)
 print'Started'
+time.sleep(1)
 local n = assert(io.stdin:read('*n'))
-io.stderr:write'Error\n'
-print'Hello'
+print('Got '..n)
+time.sleep(1)
+io.stderr:write'Error1\n'
+time.sleep(1)
+print'Hello1'
+time.sleep(1)
+io.stderr:write'Error2\n'
+time.sleep(1)
+print'Hello2'
 os.exit(123)
 ]]))
 
-	local p = assert(proc.exec_luafile({
-		script = 'proc_test_pipe.lua',
-		--async = true,
-		stdin = true,
-		stdout = true,
-		stderr = true,
-		autokill = true,
-	}))
+	local char_vla, sz = ffi.typeof'char[?]', 1024
 
-	if p.stdin then
-		sock.thread(function()
-			local s = '1234\n'
-			assert(p.stdin:write(s))
-		end)
-	end
+	sock.run(function()
 
-	if p.stdout then
-		sock.thread(function()
-			print('stdout:', ffi.string(assert(glue.readall(p.stdout.read, p.stdout))))
-		end)
-	end
+		local p = assert(proc.exec_luafile({
+			script = 'proc_test_pipe.lua',
+			async = true,
+			stdin = true,
+			stdout = true,
+			stderr = true,
+			autokill = true,
+		}))
 
-	if p.stderr then
-		sock.thread(function()
-			print('stderr:', ffi.string(assert(glue.readall(p.stderr.read, p.stderr))))
-		end)
-	end
+		if p.stdin then
+			sock.thread(function()
+				local s = '1234\n'
+				assert(p.stdin:write(s))
+				p.stdin:close()
+			end)
+		end
 
-	sock.thread(function()
-		print('exit code', p:wait(1/0))
+		if p.stdout then
+			sock.thread(function()
+				local buf = char_vla(sz)
+				while true do
+					local len = p.stdout:read(buf, sz)
+					if len > 0 then
+						io.stdout:write(ffi.string(buf, len))
+					else
+						p.stdout:close()
+						break
+					end
+				end
+			end)
+		end
+
+		if p.stderr then
+			sock.thread(function()
+				local buf = char_vla(sz)
+				while true do
+					local len = p.stderr:read(buf, sz)
+					if len > 0 then
+						io.stdout:write(ffi.string(buf, len))
+					else
+						p.stderr:close()
+						break
+					end
+				end
+			end)
+		end
+
+		print('Process finished. Exit code:', p:wait(1/0))
+
+		while
+			   (p.stdin  and not p.stdin :closed())
+			or (p.stdout and not p.stdout:closed())
+			or (p.stderr and not p.stderr:closed())
+		do
+			print'Still waiting for the pipes to close...'
+			sock.sleep(.1)
+		end
+
 		assert(os.remove('proc_test_pipe.lua'))
-	end)
 
-	sock.start()
-	print'done'
+	end)
 
 end
 

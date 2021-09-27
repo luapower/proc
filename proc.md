@@ -39,7 +39,7 @@ Spawn a child process and return a process object to query and control the
 process. Options can be given as separate args or in a table.
 
   * `cmd` can be either a string or an array containing the filepath of the
-  executable to run and its command-line arguments..
+  executable to run and its command-line arguments.
   * `env` is a table of environment variables (if not given, the current
   environment is inherited).
   * `cur_dir` is the directory to start the process in.
@@ -83,7 +83,8 @@ and signals that the child process closed its end of the pipe.
 
 #### Cleaning up
 
-Always call forget() when you're done with the process, even after you killed it.
+Always call forget() when you're done with the process, even after you
+killed it, but not before you're done with all its redirected pipes if any.
 
 #### Autkill caveats
 
