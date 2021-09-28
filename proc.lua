@@ -598,10 +598,6 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		if out_wf then check(C.dup2(out_wf.fd, 1) >= 0) end
 		if err_wf then check(C.dup2(err_wf.fd, 2) >= 0) end
 
-		if inp_rf then assert(inp_rf:close()) end
-		if out_wf then assert(out_wf:close()) end
-		if err_wf then assert(err_wf:close()) end
-
 		C.execve(cmd, arg_ptr, env_ptr)
 
 		--if we got here then exec failed.
@@ -626,9 +622,9 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		--Let the child process have the only handles to their pipe ends,
 		--otherwise when the child process exits, the pipes will stay open on
 		--account of us (the parent process) holding a handle to them.
-		if inp_rf then assert(inp_rf:close())  end
-		if out_wf then assert(out_wf:close())  end
-		if err_wf then assert(err_wf:close())  end
+		if inp_rf then assert(inp_rf:close()) end
+		if out_wf then assert(out_wf:close()) end
+		if err_wf then assert(err_wf:close()) end
 
 		self.id = pid
 

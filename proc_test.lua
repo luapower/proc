@@ -1,3 +1,4 @@
+
 local proc = require'proc'
 local ffi = require'ffi'
 local time = require'time'
@@ -172,7 +173,6 @@ os.exit(123)
 				local buf = char_vla(sz)
 				while true do
 					local len = assert(p.stdout:read(buf, sz))
-					print('>>>>>>>>>', p.stdout.fd, len)
 					if len > 0 then
 						io.stdout:write(ffi.string(buf, len))
 					else
@@ -206,7 +206,11 @@ os.exit(123)
 			or (p.stderr and not p.stderr:closed())
 		do
 			print'Still waiting for the pipes to close...'
-			print(p.stdin:closed(), p.stdout:closed(), p.stderr:closed())
+			print(glue.catargs(' ',
+				p.stdin  and not p.stdin :closed() and 'stdin' or nil,
+				p.stdout and not p.stdout:closed() and 'stdout' or nil,
+				p.stderr and not p.stderr:closed() and 'stderr' or nil
+			))
 			sock.sleep(.1)
 		end
 
