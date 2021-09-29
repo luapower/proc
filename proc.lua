@@ -7,7 +7,7 @@ if not ... then require'proc_test'; return end
 local ffi = require'ffi'
 local bit = require'bit'
 local M = {}
-local proc = {}
+local proc = {type = 'process', debug_prefix = 'P'}
 
 local function inherit(t, super)
 	return setmetatable(t, {__index = super})
@@ -118,7 +118,7 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 			end
 			self.stdin = inp_wf
 		elseif stdin then
-			assert(stdin.is_pipe_end)
+			assert(stdin.type == 'pipe')
 			stdin:set_inheritable(true)
 			inp_rf = stdin
 		end
@@ -135,7 +135,7 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 			end
 			self.stdout = out_rf
 		elseif stdout then
-			assert(stdout.is_pipe_end)
+			assert(stdout.type == 'pipe')
 			stdout:set_inheritable(true)
 			out_wf = stdout
 		end
@@ -152,7 +152,7 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 			end
 			self.stderr = err_rf
 		elseif stderr then
-			assert(stderr.is_pipe_end)
+			assert(stderr.type == 'pipe')
 			stderr:set_inheritable(true)
 			err_wf = stderr
 		end
@@ -463,7 +463,7 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		env_ptr[m] = nil
 	end
 
-	local self = inherit({}, proc)
+	local self = inherit({async = async}, proc)
 
 	if async then
 		local sock = require'sock'
