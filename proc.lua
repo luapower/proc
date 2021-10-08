@@ -177,6 +177,10 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 
 	local is_in_job = autokill and winapi.IsProcessInJob(winapi.GetCurrentProcess(), nil)
 
+	if _G.note then
+		note('proc', 'exec', '%s', cmd)
+	end
+
 	local pi, err, errcode = winapi.CreateProcess(
 		cmd, env, dir, si, inherit_handles,
 			autokill
@@ -261,7 +265,7 @@ function proc:wait(expires)
 	if not self.handle then
 		return nil, 'forgotten'
 	end
-	while self:status() == 'active' and self._clock() < expires do
+	while self:status() == 'active' and self._clock() < (expires or 1/0) do
 		self._sleep(0.01)
 	end
 	local exit_code, err = self:exit_code()
@@ -384,6 +388,15 @@ end
 
 local function close_fd(fd)
 	return C.close(fd) == 0
+end
+
+--TODO: could probably spend more time on this...
+local function esc(s)
+	s = s:gsub('[^%w_%-%s]', '\\%1')
+	if s:find'%s' then
+		s = "'"..s.."'"
+	end
+	return s
 end
 
 function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_handles)
@@ -597,6 +610,14 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		if inp_rf then check(C.dup2(inp_rf.fd, 0) >= 0) end
 		if out_wf then check(C.dup2(out_wf.fd, 1) >= 0) end
 		if err_wf then check(C.dup2(err_wf.fd, 2) >= 0) end
+
+		if _G.note then
+			local t = {}
+			for i,arg in ipairs(args) do
+				t[i] = esc(arg)
+			end
+			note('proc', 'exec', '%s%s', cmd, table.concat(t, ' '))
+		end
 
 		C.execve(cmd, arg_ptr, env_ptr)
 
