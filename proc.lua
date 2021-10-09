@@ -287,7 +287,7 @@ ffi.cdef[[
 extern char **environ;
 int setenv(const char *name, const char *value, int overwrite);
 int unsetenv(const char *name);
-int execve(const char *file, char *const argv[], char *const envp[]);
+int execvpe(const char *file, char *const argv[], char *const envp[]);
 typedef int pid_t;
 pid_t fork(void);
 int kill(pid_t pid, int sig);
@@ -392,7 +392,7 @@ end
 
 --TODO: could probably spend more time on this...
 local function esc(s)
-	s = s:gsub('[^%w_%-%s]', '\\%1')
+	s = s:gsub('[^%w_%-%s%.=@]', '\\%1')
 	if s:find'%s' then
 		s = "'"..s.."'"
 	end
@@ -612,14 +612,14 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		if err_wf then check(C.dup2(err_wf.fd, 2) >= 0) end
 
 		if _G.note then
-			local t = {}
+			local t = {cmd}
 			for i,arg in ipairs(args) do
-				t[i] = esc(arg)
+				t[#t+1] = esc(arg)
 			end
-			note('proc', 'exec', '%s%s', cmd, table.concat(t, ' '))
+			note('proc', 'exec', '%s', table.concat(t, ' '))
 		end
 
-		C.execve(cmd, arg_ptr, env_ptr)
+		C.execvpe(cmd, arg_ptr, env_ptr)
 
 		--if we got here then exec failed.
 		check()
@@ -697,7 +697,7 @@ function proc:wait(expires)
 	if not self.id then
 		return nil, 'forgotten'
 	end
-	while self:status() == 'active' and self._clock() < expires do
+	while self:status() == 'active' and self._clock() < (expires or 1/0) do
 		self._sleep(0.01)
 	end
 	local exit_code, err = self:exit_code()
