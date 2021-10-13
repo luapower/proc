@@ -266,7 +266,7 @@ function proc:wait(expires)
 		return nil, 'forgotten'
 	end
 	while self:status() == 'active' and self._clock() < (expires or 1/0) do
-		self._sleep(0.01)
+		self._sleep(.1)
 	end
 	local exit_code, err = self:exit_code()
 	if exit_code then

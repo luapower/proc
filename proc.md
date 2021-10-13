@@ -84,7 +84,8 @@ and signals that the child process closed its end of the pipe.
 #### Cleaning up
 
 Always call forget() when you're done with the process, even after you
-killed it, but not before you're done with all its redirected pipes if any.
+killed it, but not before you're done with all its redirected pipes if any
+(because forget() also closes them).
 
 #### Autkill caveats
 
