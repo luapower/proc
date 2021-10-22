@@ -47,7 +47,7 @@ end
 
 --TODO: could probably spend more time on this...
 local function esc(s)
-	s = s:gsub('(["&<>^|])', '^%1')
+	s = tostring(s):gsub('(["&<>^|])', '^%1')
 	if s:find'%s' then
 		s = '"'..s..'"'
 	end
@@ -392,7 +392,7 @@ end
 
 --TODO: could probably spend more time on this...
 local function esc(s)
-	s = s:gsub('[^%w_%-%s%.=@]', '\\%1')
+	s = tostring(s):gsub('[^%w_%-%s%.=@]', '\\%1')
 	if s:find'%s' then
 		s = "'"..s.."'"
 	end
