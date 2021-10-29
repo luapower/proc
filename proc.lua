@@ -21,7 +21,8 @@ end
 
 if ffi.os == 'Windows' then --------------------------------------------------
 
---TODO: move relevant ctypes here and get rid of the huge dependency.
+--TODO: move relevant ctypes here and get rid of the winapi dependency
+--(not worth it unless you are really really bored).
 local winapi = require'winapi'
 require'winapi.process'
 require'winapi.thread'
