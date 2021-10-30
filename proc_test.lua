@@ -242,6 +242,15 @@ function test_all()
 	end
 end
 
+function test.esc()
+	if ffi.abi'win' then
+		assert(proc.quote_arg[[a\"xxx\\\]] == [["a\\\"xxx\\\\\\"]])
+	else
+		--TODO
+	end
+end
+
+test.esc()
 --test.pipe()
 test.pipe_async()
 --test.autokill()
