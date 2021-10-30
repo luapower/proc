@@ -19,34 +19,66 @@ local function extend(dt, t)
 	for i=1,#t do dt[j+i]=t[i] end
 end
 
---TODO: could probably spend more time on this...
-local function esc_win(s)
-	s = tostring(s):gsub('(["&<>^|])', '^%1')
+--see https://docs.microsoft.com/en-us/archive/blogs/twistylittlepassagesallalike/everyone-quotes-command-line-arguments-the-wrong-way
+--You will lose precious IQ points if you read that. Lose enough of them
+--and you might get a job at Microsoft!
+function M.esc_win(s) --escape for putting inside double-quoted string
+	s = tostring(s)
+	if not s:find'[\\"]' then
+		return s
+	end
+	s = s:gsub('(\\+)"', function(s) return s:rep(2)..'\\"' end)
+	s = s:gsub('\\+$', function(s) return s:rep(2) end)
+	return s
+end
+
+function M.quote_path_win(s)
 	if s:find'%s' then
 		s = '"'..s..'"'
 	end
 	return s
 end
 
-local function esc_unix(s)
+function M.quote_arg_win(s)
+	s = tostring(s)
+	if not s:find'[\t\n\v"^&<>|]' then
+		return s
+	else
+		return '"'..M.esc_win(s)..'"'
+	end
+end
+
+function M.esc_unix(s) --escape for putting inside double-quoted string
+	return tostring(s):gsub('[$`\\!]', '\\%1')
+end
+
+function M.quote_arg_unix(s)
 	s = tostring(s)
 	if not s:find'[^a-zA-Z0-9._+:@%%/%-=]' then
 		return s
 	else
-		return '"'..s:gsub('[$`\\!]', '\\%1')..'"'
+		return '"'..M.esc_unix(s)..'"'
 	end
 end
-
-M.esc_win = esc_win
-M.esc_unix = esc_unix
 
 local Windows = ffi.os == 'Windows'
 
 function M.esc(s, platform)
 	platform = platform or (Windows and 'win' or 'unix')
-	local esc = platform == 'win' and esc_win or platform == 'unix' and esc_unix
+	local esc =
+		   platform == 'win'  and M.esc_win
+		or platform == 'unix' and M.esc_unix
 	assert(esc, 'invalid platform')
 	return esc(s)
+end
+
+function M.quote_arg(s, platform)
+	platform = platform or (Windows and 'win' or 'unix')
+	local quote_arg =
+		   platform == 'win'  and M.quote_arg_win
+		or platform == 'unix' and M.quote_arg_unix
+	assert(quote_arg, 'invalid platform')
+	return quote_arg(s)
 end
 
 if Windows then --------------------------------------------------------------
@@ -87,8 +119,9 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 
 	if type(cmd) == 'table' then
 		local t = {}
-		for i,s in ipairs(cmd) do
-			t[i] = esc_win(s)
+		t[1] = M.quote_path_win(cmd[1])
+		for i = 2, #cmd do
+			t[i] = M.quote_arg_win(cmd[i])
 		end
 		cmd = table.concat(t, ' ')
 	end
@@ -627,7 +660,7 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		if _G.note then
 			local t = {cmd}
 			for i,arg in ipairs(args) do
-				t[#t+1] = esc_unix(arg)
+				t[#t+1] = M.quote_arg_unix(arg)
 			end
 			note('proc', 'exec', '%s', table.concat(t, ' '))
 		end
