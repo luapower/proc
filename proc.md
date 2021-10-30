@@ -31,6 +31,7 @@ Missing features:
 `proc.setenv(k, v)`                                 set env. var
 `proc.setenv(k)`                                    delete env. var
 `proc.env() -> env`                                 get all env. vars
+`proc.esc(s, ['win'|'unix']) -> s`                  escape command-line arg
 --------------------------------------------------- --------------------------
 
 ### `proc.exec(args,[env],[cur_dir],[stdin],[stdout],[stderr],[autokill]) -> p`

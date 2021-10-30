@@ -19,7 +19,37 @@ local function extend(dt, t)
 	for i=1,#t do dt[j+i]=t[i] end
 end
 
-if ffi.os == 'Windows' then --------------------------------------------------
+--TODO: could probably spend more time on this...
+local function esc_win(s)
+	s = tostring(s):gsub('(["&<>^|])', '^%1')
+	if s:find'%s' then
+		s = '"'..s..'"'
+	end
+	return s
+end
+
+local function esc_unix(s)
+	s = tostring(s)
+	if not s:find'[^a-zA-Z0-9._+:@%%/%-=]' then
+		return s
+	else
+		return '"'..s:gsub('[$`\\!]', '\\%1')..'"'
+	end
+end
+
+M.esc_win = esc_win
+M.esc_unix = esc_unix
+
+local Windows = ffi.os == 'Windows'
+
+function M.esc(s, platform)
+	platform = platform or (Windows and 'win' or 'unix')
+	local esc = platform == 'win' and esc_win or platform == 'unix' and esc_unix
+	assert(esc, 'invalid platform')
+	return esc(s)
+end
+
+if Windows then --------------------------------------------------------------
 
 --TODO: move relevant ctypes here and get rid of the winapi dependency
 --(not worth it unless you are really really bored).
@@ -46,15 +76,6 @@ function M.setenv(k, v)
 	winapi.SetEnvironmentVariable(k, v)
 end
 
---TODO: could probably spend more time on this...
-local function esc(s)
-	s = tostring(s):gsub('(["&<>^|])', '^%1')
-	if s:find'%s' then
-		s = '"'..s..'"'
-	end
-	return s
-end
-
 local autokill_job
 
 local error_classes = {
@@ -67,7 +88,7 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 	if type(cmd) == 'table' then
 		local t = {}
 		for i,s in ipairs(cmd) do
-			t[i] = esc(s)
+			t[i] = esc_win(s)
 		end
 		cmd = table.concat(t, ' ')
 	end
@@ -391,15 +412,6 @@ local function close_fd(fd)
 	return C.close(fd) == 0
 end
 
---TODO: could probably spend more time on this...
-local function esc(s)
-	s = tostring(s):gsub('[^%w_%-%s%.=@]', '\\%1')
-	if s:find'%s' then
-		s = "'"..s.."'"
-	end
-	return s
-end
-
 function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_handles)
 
 	local cmd, args
@@ -615,7 +627,7 @@ function M.exec(t, env, dir, stdin, stdout, stderr, autokill, async, inherit_han
 		if _G.note then
 			local t = {cmd}
 			for i,arg in ipairs(args) do
-				t[#t+1] = esc(arg)
+				t[#t+1] = esc_unix(arg)
 			end
 			note('proc', 'exec', '%s', table.concat(t, ' '))
 		end
