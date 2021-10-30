@@ -244,7 +244,7 @@ end
 
 function test.esc()
 	if ffi.abi'win' then
-		assert(proc.quote_arg[[a\"xxx\\\]] == [["a\\\"xxx\\\\\\"]])
+		assert(proc.quote_arg[[a\"xx"yx\\\]] == [["a\\\"xx\"yx\\\\\\"]])
 	else
 		--TODO
 	end

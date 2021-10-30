@@ -27,7 +27,7 @@ function M.esc_win(s) --escape for putting inside double-quoted string
 	if not s:find'[\\"]' then
 		return s
 	end
-	s = s:gsub('(\\+)"', function(s) return s:rep(2)..'\\"' end)
+	s = s:gsub('(\\*)"', function(s) return s:rep(2)..'\\"' end)
 	s = s:gsub('\\+$', function(s) return s:rep(2) end)
 	return s
 end
