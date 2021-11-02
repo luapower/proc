@@ -41,7 +41,7 @@ end
 
 function M.quote_arg_win(s)
 	s = tostring(s)
-	if not s:find'[\t\n\v"^&<>|]' then
+	if not s:find'[ \t\n\v"^&<>|]' then
 		return s
 	else
 		return '"'..M.esc_win(s)..'"'
