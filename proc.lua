@@ -130,6 +130,8 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 	local out_rf, out_wf
 	local err_rf, err_wf
 
+	local self = inherit({async = async}, proc)
+
 	local function close_all()
 		if self.stdin then
 			assert(inp_rf:close())
@@ -144,8 +146,6 @@ function M.exec(cmd, env, dir, stdin, stdout, stderr, autokill, async, inherit_h
 			assert(err_wf:close())
 		end
 	end
-
-	local self = inherit({async = async}, proc)
 
 	if async then
 		local sock = require'sock'
