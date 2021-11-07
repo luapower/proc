@@ -28,8 +28,8 @@ Missing features:
 `p:exit_code() -> code | nil,status`                get process exit code
 `p:forget()`                                        close process handles
 `proc.env(k) -> v`                                  get env. var
-`proc.setenv(k, v)`                                 set env. var
-`proc.setenv(k)`                                    delete env. var
+`proc.env(k, v)`                                    set env. var
+`proc.env(k, false)`                                delete env. var
 `proc.env() -> env`                                 get all env. vars
 `proc.esc(s, ['win'|'unix']) -> s`                  escape string (but not quote)
 `proc.quote_arg(s, ['win'|'unix']) -> s`            quote as cmdline arg
@@ -58,8 +58,8 @@ process. Options can be given as separate args or in a table.
 Only use uppercase env. var names because like file names, env. vars
 are case-sensitive on POSIX, but case-insensitive on Windows.
 
-If using `proc.setenv()`, use `proc.env()` to read back variables instead
-of `os.getenv()` because the latter won't see the changes.
+Only use `proc.env()` to read variables instead of `os.getenv()` because
+the latter won't see the changes made to variables.
 
 #### Exit codes
 

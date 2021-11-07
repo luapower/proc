@@ -15,8 +15,8 @@ local test = setmetatable({}, {__newindex = function(self, k, v)
 end})
 
 function test.env()
-	proc.setenv('zz', '123')
-	proc.setenv('zZ', '567')
+	proc.env('zz', '123')
+	proc.env('zZ', '567')
 	if ffi.abi'win' then
 		assert(proc.env('zz') == '567')
 		assert(proc.env('zZ') == '567')
@@ -24,11 +24,11 @@ function test.env()
 		assert(proc.env('zz') == '123')
 		assert(proc.env('zZ') == '567')
 	end
-	proc.setenv('zz')
-	proc.setenv('zZ')
+	proc.env('zz', false)
+	proc.env('zZ', false)
 	assert(not proc.env'zz')
 	assert(not proc.env'zZ')
-	proc.setenv('Zz', '321')
+	proc.env('Zz', '321')
 	local t = proc.env()
 	pp(t)
 	assert(t.Zz == '321')
@@ -250,6 +250,7 @@ function test.esc()
 	end
 end
 
+test.env()
 test.esc()
 --test.pipe()
 test.pipe_async()
