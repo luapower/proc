@@ -92,7 +92,6 @@ require'winapi.thread'
 function M.env(k, v)
 	if k then
 		if v ~= nil then
-			if v == false then v = nil end
 			assert(winapi.SetEnvironmentVariable(k, v))
 		else
 			return winapi.GetEnvironmentVariable(k)
@@ -400,12 +399,10 @@ end
 
 function M.env(k, v)
 	if k then
-		if v ~= nil then
-			if v then
-				assert(C.setenv(k, v, 1) == 0)
-			else
-				assert(C.unsetenv(k) == 0)
-			end
+		if v then
+			assert(C.setenv(k, tostring(v), 1) == 0)
+		elseif v == false then
+			assert(C.unsetenv(k) == 0)
 		else
 			return os.getenv(k)
 		end
