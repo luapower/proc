@@ -9,7 +9,7 @@ Works on Windows, Linux and OSX.
 
 ## Status
 
-<warn>Needs more testing.</warn>
+Tested on Windows and Linux.
 
 Missing features:
 
@@ -20,8 +20,8 @@ Missing features:
 ## API
 
 --------------------------------------------------- --------------------------
-`proc.exec(args,...) -> p`                          spawn a child process
-`proc.exec_luafile(file,[args],...) -> p`           spawn a process running a Lua script
+`proc.exec(opt | cmd,...) -> p`                     spawn a child process
+`proc.exec_luafile(opt | script,...) -> p`          spawn a process running a Lua script
 `p:kill()`                                          kill process
 `p:wait([expires]) -> status`                       wait for a process to finish
 `p:status() -> active|finished|killed|forgotten`    process status
@@ -35,13 +35,13 @@ Missing features:
 `proc.quote_arg(s, ['win'|'unix']) -> s`            quote as cmdline arg
 --------------------------------------------------- --------------------------
 
-### `proc.exec(args,[env],[cur_dir],[stdin],[stdout],[stderr],[autokill]) -> p`
+### `proc.exec(opt | cmd, [env], [cur_dir], [stdin], [stdout], [stderr], [autokill]) -> p`
 
 Spawn a child process and return a process object to query and control the
 process. Options can be given as separate args or in a table.
 
-  * `cmd` can be either a string or an array containing the filepath of the
-  executable to run and its command-line arguments.
+  * `cmd` can be either a **string or an array** containing the filepath
+  of the executable to run and its command-line arguments.
   * `env` is a table of environment variables (if not given, the current
   environment is inherited).
   * `cur_dir` is the directory to start the process in.
@@ -50,6 +50,13 @@ process. Options can be given as separate args or in a table.
   you can also set any of these to `true` to have them opened (and closed)
   for you.
   * `autokill` kills the process when the calling process exits.
+
+### `proc.exec_luafile(opt | script,...) -> p`
+
+Spawn a process running a Lua script, using the same LuaJIT executable
+as that of the running process. The process starts in the current directory
+unless otherwise specified. The arguments and options are the same as for
+`exec()`, except that `cmd` must be a Lua file instead of an executable file.
 
 ## Programming Notes
 
@@ -66,7 +73,7 @@ the latter won't see the changes made to variables.
 Only use exit status codes in the 0..255 range because Windows exit
 codes are int32 but POSIX codes are limited to a byte.
 
-In Windows, if you kill a process from Task Manager, `exit_code()` returns 1
+In Windows, if you kill a process from Task Manager, `exit_code()` returns `1`
 instead of `nil, 'killed'`, and `status()` returns `'finished'` instead
 of `'killed'`. You only get `'killed'` when you kill the process yourself
 by calling `kill()`.

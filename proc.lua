@@ -761,6 +761,8 @@ end
 
 --wrappers -------------------------------------------------------------------
 
+--cmd|{cmd,arg1,...}, env, ...
+--{cmd=cmd|{cmd,arg1,...}, env=, ...}
 local exec = M.exec
 function M.exec(t, ...)
 	if type(t) == 'table' then
@@ -771,6 +773,8 @@ function M.exec(t, ...)
 	end
 end
 
+--script|{script,arg1,...}, env, ...
+--{script=, env=, ...}
 function M.exec_luafile(arg, ...)
 	local exepath = require'package.exepath'
 	local script = type(arg) == 'string' and arg or arg.script
@@ -779,7 +783,11 @@ function M.exec_luafile(arg, ...)
 		return M.exec(cmd, ...)
 	else
 		local t = {cmd = cmd}
-		for k,v in pairs(arg) do t[k] = v end
+		for k,v in pairs(arg) do
+			if k ~= 'script' then
+				t[k] = v
+			end
+		end
 		return M.exec(t)
 	end
 end
